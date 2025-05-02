@@ -1,102 +1,120 @@
+import os
 import sqlite3
-import pygame
-import tkinter as tk
-from tkinter import messagebox
-import sys
-import time
-import random
+from tkinter import Tk, Label, Button, Entry, filedialog, messagebox, Toplevel, Listbox, Scrollbar, Frame
+from moviepy.video.io.VideoFileClip import VideoFileClip
 
-# Initialize pygame
-pygame.init()
+# Global variable to store the destination folder
+destination_folder = ""
 
-# SQLite Setup
-conn = sqlite3.connect("car_game.db")
-cursor = conn.cursor()
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS HighScores (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        score INTEGER
-    )
-""")
-conn.commit()
+# Function to split video
+def split_video(video_path, duration):
+    if not os.path.exists(video_path):
+        messagebox.showerror("Error", "Video file does not exist.")
+        return
 
-# Function to save a high score
-def save_high_score(score):
-    cursor.execute("INSERT INTO HighScores (score) VALUES (?)", (score,))
+    if not destination_folder:
+        messagebox.showerror("Error", "Please select a destination folder.")
+        return
+
+    video = VideoFileClip(video_path)
+    video_duration = int(video.duration)
+    clips = []
+
+    for start in range(0, video_duration, duration):
+        end = min(start + duration, video_duration)
+        clip = video.subclipped(start, end)
+        clip_filename = os.path.join(destination_folder, f"clip_{start}_{end}.mp4")
+        clip.write_videofile(clip_filename, codec="libx264")
+        clips.append((video_path, clip_filename, start, end))
+
+    video.close()
+    return clips
+
+# Function to save metadata to SQLite database
+def save_to_db(clips):
+    conn = sqlite3.connect('video_clips.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS clips (
+            id INTEGER PRIMARY KEY,
+            original_filename TEXT,
+            clip_filename TEXT,
+            start_time INTEGER,
+            end_time INTEGER
+        )
+    ''')
+    
+    for clip in clips:
+        cursor.execute('INSERT INTO clips (original_filename, clip_filename, start_time, end_time) VALUES (?, ?, ?, ?)', clip)
+
     conn.commit()
+    conn.close()
 
-# Function to get top 5 high scores
-def get_high_scores():
-    cursor.execute("SELECT score FROM HighScores ORDER BY score DESC LIMIT 5")
-    return [row[0] for row in cursor.fetchall()]
+# Function to handle the split video button click
+def on_split_video():
+    video_path = filedialog.askopenfilename(title="Select Video File", filetypes=[("Video Files", "*.mp4;*.avi;*.mov")])
+    if not video_path:
+        return
 
-# Define colors and screen dimensions
-gray = (119, 118, 110)
-black = (0, 0, 0)
-red = (255, 0, 0)
-green = (0, 200, 0)
-blue = (0, 0, 200)
-bright_red = (255, 0, 0)
-bright_green = (0, 255, 0)
-bright_blue = (0, 0, 255)
-display_width = 800
-display_height = 600
+    try:
+        duration = int(duration_entry.get())
+        clips = split_video(video_path, duration)
+        if clips:
+            save_to_db(clips)
+            messagebox.showinfo("Success", "Video split successfully and metadata saved to database.")
+    except ValueError:
+        messagebox.showerror("Error", "Please enter a valid duration in seconds.")
 
-# Create the display surface
-gamedisplays = pygame.display.set_mode((display_width, display_height))
-pygame.display.set_caption("Car Game")
+# Function to show history of split files
+def show_history():
+    history_window = Toplevel(root)
+    history_window.title("History of Split Files")
+    history_window.geometry("600x400")
+    history_window.configure(bg="#f0f8ff")
 
-# Clock object for managing frame rate
-clock = pygame.time.Clock()
+    Label(history_window, text="History of Split Files", font=("Helvetica", 16, "bold"), bg="#f0f8ff", fg="#333").pack(pady=10)
 
-# Load images
-carimg = pygame.image.load('car1.jpg')
-backgroundpic = pygame.image.load("download12.jpg")
-yellow_strip = pygame.image.load("yellow strip.jpg")
-strip = pygame.image.load("strip.jpg")
-intro_background = pygame.image.load("background.jpg")
-instruction_background = pygame.image.load("background2.jpg")
+    listbox_frame = Frame(history_window)
+    listbox_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
-car_width = 56
-pause = False
+    listbox = Listbox(listbox_frame, width=70, height=15, font=("Courier", 10))
+    listbox.pack(side="left", fill="both", expand=True)
 
-# Function to display the intro screen
-def intro_loop():
-    intro = True
-    while intro:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                quit()
-                sys.exit()
+    scrollbar = Scrollbar(listbox_frame)
+    scrollbar.pack(side="right", fill="y")
+    listbox.config(yscrollcommand=scrollbar.set)
+    scrollbar.config(command=listbox.yview)
 
-        gamedisplays.blit(intro_background, (0, 0))
-        largetext = pygame.font.Font('freesansbold.ttf', 115)
-        TextSurf, TextRect = text_objects("CAR GAME", largetext)
-        TextRect.center = (400, 100)
-        gamedisplays.blit(TextSurf, TextRect)
+    conn = sqlite3.connect('video_clips.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT original_filename, clip_filename, start_time, end_time FROM clips')
+    rows = cursor.fetchall()
+    conn.close()
 
-        # Display high scores
-        scores = get_high_scores()
-        smalltext = pygame.font.Font('freesansbold.ttf', 20)
-        y_offset = 200
-        for idx, score in enumerate(scores, 1):
-            score_text = f"{idx}. {score}"
-            textsurf, textrect = text_objects(score_text, smalltext)
-            textrect.center = (400, y_offset)
-            gamedisplays.blit(textsurf, textrect)
-            y_offset += 30
+    for row in rows:
+        listbox.insert("end", f"Original: {row[0]} | Clip: {row[1]} | Start: {row[2]}s | End: {row[3]}s")
 
-        button("START", 150, 520, 100, 50, green, bright_green, "play")
-        button("QUIT", 550, 520, 100, 50, red, bright_red, "quit")
-        button("INSTRUCTION", 300, 520, 200, 50, blue, bright_blue, "intro")
-        pygame.display.update()
-        clock.tick(50)
+# Function to select destination folder
+def select_destination_folder():
+    global destination_folder
+    destination_folder = filedialog.askdirectory(title="Select Destination Folder")
+    if destination_folder:
+        messagebox.showinfo("Selected Folder", f"Destination folder set to: {destination_folder}")
 
-# Function to display the crash screen and save the score
-def crash(score):
-    save_high_score(score)
-    message_display("YOU CRASHED")
+# Create the GUI
+root = Tk()
+root.title("Video Splitter")
+root.geometry("400x400")
+root.configure(bg="#f0f8ff")
 
-# Other functions (button, introduction, countdown, game_loop, etc.) remain the same.
-# Ensure to pass the `score` variable appropriately in the `crash` function call.
+Label(root, text="Video Splitter", font=("Helvetica", 20, "bold"), bg="#f0f8ff", fg="#333").pack(pady=10)
+
+Label(root, text="Enter Clip Duration (seconds):", font=("Arial", 12), bg="#f0f8ff", fg="#333").pack(pady=5)
+duration_entry = Entry(root, font=("Arial", 12), width=15, justify="center")
+duration_entry.pack(pady=5)
+
+Button(root, text="Select Destination Folder", font=("Arial", 12), bg="#4682b4", fg="white", command=select_destination_folder).pack(pady=10)
+Button(root, text="Split Video", font=("Arial", 12, "bold"), bg="#5cb85c", fg="white", command=on_split_video).pack(pady=10)
+Button(root, text="Show History", font=("Arial", 12), bg="#0275d8", fg="white", command=show_history).pack(pady=10)
+
+root.mainloop()
